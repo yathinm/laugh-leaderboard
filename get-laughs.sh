@@ -22,7 +22,23 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 chmod +x export_laughs.py 2>/dev/null || true
-python3 export_laughs.py
+
+FLAGS=""
+
+echo "Include 1-on-1 conversations? (y/N)"
+read -r include_dm
+if [[ "$include_dm" =~ ^[Yy] ]]; then
+  FLAGS="$FLAGS --include-individual"
+fi
+
+echo ""
+echo "Auto-detect contact names from your Contacts app? (Y/n)"
+read -r use_contacts
+if [[ ! "$use_contacts" =~ ^[Nn] ]]; then
+  FLAGS="$FLAGS --auto-contacts"
+fi
+
+python3 export_laughs.py $FLAGS
 
 echo ""
 echo "Open the board with:"

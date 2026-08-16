@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import hashlib
 import json
 import re
@@ -110,6 +111,80 @@ def load_names(path: Path | None) -> dict[str, str]:
     return {str(k).strip().lower(): str(v) for k, v in data.items()}
 
 
+def load_contacts_from_addressbook() -> dict[str, str]:
+    """Read the macOS Contacts (AddressBook) database and return a mapping
+    of phone/email → display name. Requires Full Disk Access for Terminal."""
+    contacts: dict[str, str] = {}
+    ab_dir = Path.home() / "Library" / "Application Support" / "AddressBook"
+    if not ab_dir.exists():
+        return contacts
+
+    db_paths: list[Path] = []
+    for match in glob.glob(str(ab_dir / "**" / "AddressBook-v22.abcddb"), recursive=True):
+        db_paths.append(Path(match))
+    if not db_paths:
+        for match in glob.glob(str(ab_dir / "**" / "*.abcddb"), recursive=True):
+            db_paths.append(Path(match))
+
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+
+            # Phone numbers
+            try:
+                rows = conn.execute("""
+                    SELECT
+                        COALESCE(r.ZFIRSTNAME, '') AS first,
+                        COALESCE(r.ZLASTNAME, '') AS last,
+                        p.ZFULLNUMBER AS phone
+                    FROM ZABCDRECORD r
+                    JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
+                    WHERE p.ZFULLNUMBER IS NOT NULL
+                """).fetchall()
+                for row in rows:
+                    name = f"{row['first']} {row['last']}".strip()
+                    if not name:
+                        continue
+                    phone = row["phone"]
+                    digits = re.sub(r"\D", "", phone)
+                    # Store multiple normalizations so matching is flexible
+                    contacts[phone.lower()] = name
+                    if len(digits) >= 10:
+                        tail10 = digits[-10:]
+                        contacts[f"+1{tail10}"] = name
+                        contacts[tail10] = name
+                    if digits:
+                        contacts[f"+{digits}"] = name
+            except sqlite3.OperationalError:
+                pass
+
+            # Email addresses
+            try:
+                rows = conn.execute("""
+                    SELECT
+                        COALESCE(r.ZFIRSTNAME, '') AS first,
+                        COALESCE(r.ZLASTNAME, '') AS last,
+                        e.ZADDRESS AS email
+                    FROM ZABCDRECORD r
+                    JOIN ZABCDEMAILADDRESS e ON e.ZOWNER = r.Z_PK
+                    WHERE e.ZADDRESS IS NOT NULL
+                """).fetchall()
+                for row in rows:
+                    name = f"{row['first']} {row['last']}".strip()
+                    if not name:
+                        continue
+                    contacts[row["email"].strip().lower()] = name
+            except sqlite3.OperationalError:
+                pass
+
+            conn.close()
+        except (sqlite3.Error, OSError) as e:
+            print(f"  (note: could not read contacts from {db_path.name}: {e})", file=sys.stderr)
+
+    return contacts
+
+
 def display_person(handle: str | None, is_from_me: bool, names: dict[str, str]) -> str:
     if is_from_me:
         return names.get("me", "Me")
@@ -130,7 +205,28 @@ def display_person(handle: str | None, is_from_me: bool, names: dict[str, str]) 
     return handle
 
 
-def list_group_chats(conn: sqlite3.Connection, limit: int = 80) -> list[dict]:
+def resolve_chat_contact(chat: dict, contact_names: dict[str, str]) -> str | None:
+    """Try to resolve a chat's identifier to a contact name."""
+    if not contact_names:
+        return None
+    ident = (chat.get("chat_identifier") or "").strip().lower()
+    if not ident:
+        return None
+    resolved = contact_names.get(ident)
+    if resolved:
+        return resolved
+    digits = re.sub(r"\D", "", ident)
+    if len(digits) >= 10:
+        resolved = contact_names.get(f"+1{digits[-10:]}")
+        if resolved:
+            return resolved
+        resolved = contact_names.get(digits[-10:])
+        if resolved:
+            return resolved
+    return None
+
+
+def list_chats(conn: sqlite3.Connection, limit: int = 80, min_participants: int = 2) -> list[dict]:
     rows = conn.execute(
         """
         SELECT
@@ -148,13 +244,13 @@ def list_group_chats(conn: sqlite3.Connection, limit: int = 80) -> list[dict]:
         FROM chat c
         WHERE (
             SELECT COUNT(*) FROM chat_handle_join chj WHERE chj.chat_id = c.ROWID
-          ) >= 2
+          ) >= ?
            OR COALESCE(c.display_name, '') != ''
            OR c.chat_identifier LIKE 'chat%'
         ORDER BY message_count DESC
         LIMIT ?
         """,
-        (limit,),
+        (min_participants, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -665,32 +761,44 @@ def prompt(msg: str) -> str:
         return ""
 
 
-def interactive_pick(conn: sqlite3.Connection) -> tuple[list[int], str]:
-    print("\nWhat is the group chat name? (part of the name is fine)")
+def interactive_pick(conn: sqlite3.Connection, include_individual: bool = False, contact_names: dict[str, str] | None = None) -> tuple[list[int], str]:
+    chat_type = "chat (group or individual)" if include_individual else "group chat name"
+    print(f"\nWhat is the {chat_type}? (part of the name is fine)")
     q = prompt("> ")
     if not q:
         die("No chat name entered.")
-    chats = list_group_chats(conn, limit=200)
+    min_participants = 1 if include_individual else 2
+    chats = list_chats(conn, limit=200, min_participants=min_participants)
+    contacts = contact_names or {}
     ql = q.lower()
-    matches = [
-        c
-        for c in chats
-        if ql in (c["display_name"] or "").lower() or ql in (c["chat_identifier"] or "").lower()
-    ]
+    matches = []
+    for c in chats:
+        display = (c["display_name"] or "").lower()
+        ident = (c["chat_identifier"] or "").lower()
+        resolved = (resolve_chat_contact(c, contacts) or "").lower()
+        if ql in display or ql in ident or (resolved and ql in resolved):
+            matches.append(c)
     if not matches:
-        print("\nNo matches. Biggest group chats on this Mac:\n")
+        chat_label = "chats" if include_individual else "group chats"
+        print(f"\nNo matches. Biggest {chat_label} on this Mac:\n")
         for i, c in enumerate(chats[:15], 1):
+            resolved = resolve_chat_contact(c, contacts)
+            label = resolved or c["display_name"] or ""
             print(
                 f"  {i:>2}. id={c['chat_id']:<5} members~{c['participants']:<3} "
-                f"msgs~{c['message_count']:<7} {c['display_name']}"
+                f"msgs~{c['message_count']:<7} {label}"
             )
         die("Try again with a name from the list above.")
 
     print(f"\nFound {len(matches)} chat thread(s) matching {q!r}:\n")
     for i, c in enumerate(matches[:30], 1):
+        resolved = resolve_chat_contact(c, contacts)
+        label = resolved or c["display_name"] or c["chat_identifier"] or ""
+        if resolved and c["display_name"] and resolved.lower() != c["display_name"].lower():
+            label = f"{resolved} ({c['display_name']})"
         print(
             f"  {i:>2}. id={c['chat_id']:<5} members~{c['participants']:<3} "
-            f"msgs~{c['message_count']:<7} {c['display_name']}"
+            f"msgs~{c['message_count']:<7} {label}"
         )
 
     if len(matches) == 1:
@@ -712,7 +820,7 @@ def interactive_pick(conn: sqlite3.Connection) -> tuple[list[int], str]:
                 die("Could not understand that choice.")
 
     chat_ids = [c["chat_id"] for c in chosen]
-    chat_name = chosen[0]["display_name"] or q
+    chat_name = resolve_chat_contact(chosen[0], contacts) or chosen[0]["display_name"] or q
     return chat_ids, chat_name
 
 
@@ -737,23 +845,47 @@ def main() -> None:
         help="Also write a simple CSV summary",
     )
     parser.add_argument("--list", action="store_true", help="List group chats and exit")
+    parser.add_argument("--include-individual", action="store_true", 
+                        help="Include 1-on-1 chats in addition to group chats")
+    parser.add_argument("--auto-contacts", action="store_true",
+                        help="Auto-pull names from macOS Contacts app (needs Full Disk Access)")
     args = parser.parse_args()
 
     print(f"Copying Messages DB → {args.copy_to}")
     db_path = copy_db(args.db, args.copy_to)
     conn = connect(db_path)
 
+    names = load_names(args.names)
+    contact_names: dict[str, str] = {}
+    if args.auto_contacts:
+        print("Reading contacts from AddressBook…")
+        contact_names = load_contacts_from_addressbook()
+        if contact_names:
+            print(f"  Found {len(contact_names)} contact entries.")
+        else:
+            print("  No contacts found (check Full Disk Access for Terminal).")
+        # Manual names override auto-contacts
+        names = {**contact_names, **names}
+
     if args.list:
-        chats = list_group_chats(conn)
-        print(f"\n{'id':>6}  {'members':>7}  {'msgs':>8}  name")
+        min_participants = 1 if args.include_individual else 2
+        chats = list_chats(conn, min_participants=min_participants)
+        chat_type = "all chats" if args.include_individual else "group chats"
+        print(f"\n{chat_type.capitalize()}:")
+        print(f"{'id':>6}  {'members':>7}  {'msgs':>8}  name")
         for c in chats:
+            display = (c["display_name"] or "")[:60]
+            resolved = resolve_chat_contact(c, contact_names)
+            if resolved and not c["display_name"]:
+                ident = (c.get("chat_identifier") or "")
+                display = f"{resolved}  ({ident})"
+            elif resolved and c["display_name"]:
+                display = c["display_name"][:60]
             print(
                 f"{c['chat_id']:>6}  {c['participants']:>7}  {c['message_count']:>8}  "
-                f"{(c['display_name'] or '')[:60]}"
+                f"{display}"
             )
         return
-
-    names = load_names(args.names)
 
     if args.chat_id is not None:
         chat_ids = [args.chat_id]
@@ -763,13 +895,16 @@ def main() -> None:
         ).fetchone()
         chat_name = row["n"] if row else str(args.chat_id)
     elif args.chat:
-        chats = list_group_chats(conn, limit=300)
+        min_participants = 1 if args.include_individual else 2
+        chats = list_chats(conn, limit=300, min_participants=min_participants)
         ql = args.chat.lower()
-        matches = [
-            c
-            for c in chats
-            if ql in (c["display_name"] or "").lower() or ql in (c["chat_identifier"] or "").lower()
-        ]
+        matches = []
+        for c in chats:
+            display = (c["display_name"] or "").lower()
+            ident = (c["chat_identifier"] or "").lower()
+            resolved = (resolve_chat_contact(c, contact_names) or "").lower()
+            if ql in display or ql in ident or (resolved and ql in resolved):
+                matches.append(c)
         if not matches:
             die(f"No chat matched {args.chat!r}. Try --list")
         if args.all_matching or len(matches) == 1:
@@ -777,11 +912,13 @@ def main() -> None:
         else:
             print("Multiple matches; re-run with --all-matching or --chat-id:", file=sys.stderr)
             for c in matches[:20]:
-                print(f"  id={c['chat_id']}  {c['display_name']}", file=sys.stderr)
+                resolved = resolve_chat_contact(c, contact_names)
+                label = resolved or c["display_name"] or c["chat_identifier"] or ""
+                print(f"  id={c['chat_id']}  {label}", file=sys.stderr)
             die("Pick one.")
-        chat_name = matches[0]["display_name"] or args.chat
+        chat_name = resolve_chat_contact(matches[0], contact_names) or matches[0]["display_name"] or args.chat
     else:
-        chat_ids, chat_name = interactive_pick(conn)
+        chat_ids, chat_name = interactive_pick(conn, include_individual=args.include_individual, contact_names=contact_names)
 
     print(f"\nAnalyzing {len(chat_ids)} thread(s) for “{chat_name}”…")
     data = analyze(conn, chat_ids, chat_name, names)
