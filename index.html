@@ -993,20 +993,41 @@
       }
     }
 
+    function needsNaming(person) {
+      if (!person) return true;
+      if (person === "Unknown") return false; // filter out Unknown entirely
+      if (person.toLowerCase() === "me") return true;
+      if (/^\+?\d[\d\s\-().]{6,}$/.test(person.trim())) return true;
+      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(person.trim())) return true;
+      return false;
+    }
+
     function showNameMapper(data) {
       validateData(data);
       RAW_DATA = data;
       document.getElementById("dropzone").classList.add("loaded");
       document.getElementById("app").classList.add("app-hidden");
       document.getElementById("app").classList.remove("app-visible");
+      const filteredPeople = data.people.filter((p) => p !== "Unknown");
+
+      // Only show the mapper for people who need naming (phone numbers, emails, "Me")
+      const unmapped = filteredPeople.filter(needsNaming);
+
+      if (unmapped.length === 0) {
+        // Everyone already has a proper name — skip the mapper
+        boot(data);
+        return;
+      }
+
       const mapper = document.getElementById("name-mapper");
       const list = document.getElementById("name-map-list");
-      list.innerHTML = data.people.map((person, i) => `
-        <label class="name-map-row">
+      list.innerHTML = unmapped.map((person) => {
+        const i = data.people.indexOf(person);
+        return `<label class="name-map-row">
           <span class="name-map-handle">${escapeHtml(person)}</span>
           <input type="text" data-person-index="${i}" placeholder="Enter name" autocomplete="off" />
-        </label>
-      `).join("");
+        </label>`;
+      }).join("");
       mapper.classList.add("visible");
       const first = list.querySelector("input");
       if (first) first.focus();
@@ -1029,18 +1050,33 @@
       if (!RAW_DATA) return;
       const mapping = {};
       const finalNames = [];
+      // Map people shown in the mapper
       document.querySelectorAll("#name-map-list input").forEach((input) => {
         const original = RAW_DATA.people[Number(input.dataset.personIndex)];
         const name = input.value.trim() || original;
         mapping[original] = name;
         finalNames.push(name.toLowerCase());
       });
+      // Include people not in the mapper (already named) for duplicate check
+      RAW_DATA.people.forEach((p) => {
+        if (p === "Unknown") return;
+        if (!(p in mapping)) {
+          finalNames.push(p.toLowerCase());
+        }
+      });
       if (new Set(finalNames).size !== finalNames.length) {
         alert("Please use a different name for each person.");
         return;
       }
+      // Remove "Unknown" from the data
+      mapping["Unknown"] = null;
       document.getElementById("name-mapper").classList.remove("visible");
-      boot(renameDeep(RAW_DATA, mapping));
+      const cleaned = renameDeep(RAW_DATA, mapping);
+      // Filter out null entries (Unknown) from people array
+      if (cleaned.people) {
+        cleaned.people = cleaned.people.filter((p) => p !== null && p !== "Unknown");
+      }
+      boot(cleaned);
     }
 
     function bindOnce() {
@@ -1183,7 +1219,12 @@
     document.getElementById("apply-names").addEventListener("click", applyNameMapping);
     document.getElementById("skip-names").addEventListener("click", () => {
       document.getElementById("name-mapper").classList.remove("visible");
-      boot(RAW_DATA);
+      // Filter out Unknown even when skipping
+      const data = JSON.parse(JSON.stringify(RAW_DATA));
+      if (data.people) {
+        data.people = data.people.filter((p) => p !== "Unknown");
+      }
+      boot(data);
     });
     document.getElementById("name-map-list").addEventListener("keydown", (e) => {
       if (e.key === "Enter") applyNameMapping();

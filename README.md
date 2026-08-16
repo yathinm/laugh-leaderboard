@@ -1,7 +1,7 @@
 # iMessage Laugh Board
 
 Rank **Haha, Heart, Thumbs Up, and Thumbs Down** reactions in an iMessage
-group chat — on your Mac only.
+chat — group or individual — on your Mac only.
 
 Nothing is uploaded. Your messages never leave your computer.
 
@@ -18,7 +18,7 @@ After one Terminal command, a local webpage shows:
 
 ## Requirements
 
-- A **Mac** with the group chat history in the **Messages** app
+- A **Mac** with the chat history in the **Messages** app
 - **Full Disk Access** for Terminal (one-time permission)
 
 ## Steps (non-coders)
@@ -35,7 +35,7 @@ In Terminal:
 
 ```bash
 cd ~/Desktop
-git clone https://github.com/worldofteek/laugh-leaderboard.git
+git clone https://github.com/yathinm/laugh-leaderboard.git
 cd laugh-leaderboard
 ```
 
@@ -47,7 +47,7 @@ If macOS asks to install developer tools, click **Install**, wait, then run the 
 ./get-laughs.sh
 ```
 
-Answer the prompts (group name, then which thread).  
+Answer the prompts (group name, whether to include 1-on-1 chats, and auto-contacts).  
 That creates:
 
 - `~/Desktop/laugh-data.json` ← use this in the UI  
@@ -64,9 +64,8 @@ Or double-click **index.html** in Finder.
 
 Drop **laugh-data.json** onto the page.
 
-The page will show every phone number/email it found. Type the matching
-name beside each one, then click **View my board**. The names are applied
-locally across rankings, the matrix, bar race, Hall of Fame, and clips.
+If any contacts are still just phone numbers or emails, you'll be prompted to
+name them. Contacts that already have names (from `--auto-contacts`) skip this step.
 
 > Tip: to try the UI with fake data first, drop **sample-data.json**, or run `python3 -m http.server 8765` in this folder and open `http://localhost:8765` (the Sample button works that way).
 
@@ -82,9 +81,9 @@ Phones/emails are shortened automatically. For custom names, create `names.json`
 
 ```json
 {
-  "me": "Prateek",
-  "+15551234567": "Alex",
-  "friend@icloud.com": "Sam"
+  "me": "Yathin",
+  "+15551234567": "Friend",
+  "friend@icloud.com": "Friend"
 }
 ```
 
@@ -94,12 +93,26 @@ Then:
 python3 export_laughs.py --names names.json
 ```
 
+Or use `--auto-contacts` to pull names straight from your Contacts app (no manual mapping needed):
+
+```bash
+python3 export_laughs.py --auto-contacts
+```
+
 ## For people who like flags
 
 ```bash
 python3 export_laughs.py --list
 python3 export_laughs.py --chat "group name" --all-matching
 python3 export_laughs.py --chat-id 42
+
+# Include 1-on-1 conversations
+python3 export_laughs.py --include-individual
+python3 export_laughs.py --list --include-individual
+
+# Auto-detect names from macOS Contacts app
+python3 export_laughs.py --auto-contacts
+python3 export_laughs.py --chat "Hailey" --include-individual --auto-contacts
 ```
 
 ## Notes
