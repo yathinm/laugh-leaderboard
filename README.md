@@ -13,6 +13,7 @@ After one Terminal command, a local webpage shows:
 - **Who → Whom** matrices for Haha, Heart, Thumbs Up, and Thumbs Down
 - **Bar race** over time
 - **When hours** heatmap (Eastern Time)
+- **Daily activity** (busiest day, average texts per day, weekday breakdown)
 - **Funniest** messages (Hall of Fame + setup thread)
 - **Clips** (TikTok / IG Reels / YouTube Shorts)
 
@@ -105,12 +106,8 @@ python3 export_laughs.py --auto-contacts
 python3 export_laughs.py --list
 python3 export_laughs.py --chat "group name" --all-matching
 python3 export_laughs.py --chat-id 42
-
-# Include 1-on-1 conversations
 python3 export_laughs.py --include-individual
 python3 export_laughs.py --list --include-individual
-
-# Auto-detect names from macOS Contacts app
 python3 export_laughs.py --auto-contacts
 python3 export_laughs.py --chat "Hailey" --include-individual --auto-contacts
 ```

@@ -632,6 +632,91 @@ def analyze(conn: sqlite3.Connection, chat_ids: list[int], chat_name: str, names
         w_to = max(dated).isoformat() if dated else None
 
         people_rows = finalize_people(stats, people_order)
+
+        # Daily activity stats
+        msgs_by_date: Counter = Counter()
+        msgs_by_date_person: dict[str, Counter] = {p: Counter() for p in people_order}
+        for r, person, dt in normal:
+            if not in_window(dt, wstart, wend) or not dt:
+                continue
+            day_key = dt.astimezone(TZ).strftime("%Y-%m-%d")
+            msgs_by_date[day_key] += 1
+            msgs_by_date_person[person][day_key] += 1
+
+        total_active_days = len(msgs_by_date)
+        total_msgs_in_window = sum(msgs_by_date.values())
+        avg_per_active_day = (
+            round(total_msgs_in_window / total_active_days, 1) if total_active_days else 0.0
+        )
+
+        calendar_days = 0
+        avg_per_calendar_day = 0.0
+        if msgs_by_date:
+            first_day = datetime.strptime(min(msgs_by_date), "%Y-%m-%d").date()
+            last_day = datetime.strptime(max(msgs_by_date), "%Y-%m-%d").date()
+            calendar_days = (last_day - first_day).days + 1
+            avg_per_calendar_day = round(total_msgs_in_window / calendar_days, 1) if calendar_days else 0.0
+
+        counts_sorted = sorted(msgs_by_date.values())
+        if counts_sorted:
+            n = len(counts_sorted)
+            median_per_day = (
+                counts_sorted[n // 2]
+                if n % 2
+                else round((counts_sorted[n // 2 - 1] + counts_sorted[n // 2]) / 2, 1)
+            )
+        else:
+            median_per_day = 0
+
+        busiest_day = max(msgs_by_date.items(), key=lambda kv: kv[1]) if msgs_by_date else ("—", 0)
+        quietest_day = min(msgs_by_date.items(), key=lambda kv: kv[1]) if msgs_by_date else ("—", 0)
+
+        weekday_totals = [0] * 7  # Mon=0
+        for day_key, count in msgs_by_date.items():
+            weekday_totals[datetime.strptime(day_key, "%Y-%m-%d").weekday()] += count
+        busiest_weekday_i = max(range(7), key=lambda i: weekday_totals[i]) if any(weekday_totals) else 0
+        weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+        top_days = sorted(msgs_by_date.items(), key=lambda kv: -kv[1])[:10]
+
+        person_daily = []
+        for p in people_order:
+            p_days = len(msgs_by_date_person[p])
+            p_total = sum(msgs_by_date_person[p].values())
+            p_busiest = (
+                max(msgs_by_date_person[p].items(), key=lambda kv: kv[1])
+                if msgs_by_date_person[p]
+                else ("—", 0)
+            )
+            person_daily.append(
+                {
+                    "person": p,
+                    "total_messages": p_total,
+                    "active_days": p_days,
+                    "avg_per_day": round(p_total / p_days, 1) if p_days else 0.0,
+                    "avg_per_calendar_day": round(p_total / calendar_days, 1) if calendar_days else 0.0,
+                    "busiest_day": p_busiest[0],
+                    "busiest_day_count": p_busiest[1],
+                }
+            )
+
+        daily_stats = {
+            "total_active_days": total_active_days,
+            "calendar_days": calendar_days,
+            "avg_messages_per_day": avg_per_active_day,
+            "avg_per_calendar_day": avg_per_calendar_day,
+            "median_messages_per_day": median_per_day,
+            "busiest_day": busiest_day[0],
+            "busiest_day_count": busiest_day[1],
+            "quietest_day": quietest_day[0],
+            "quietest_day_count": quietest_day[1],
+            "busiest_weekday": weekday_names[busiest_weekday_i],
+            "busiest_weekday_count": weekday_totals[busiest_weekday_i],
+            "weekday_totals": weekday_totals,
+            "top_days": [{"date": d, "count": c} for d, c in top_days],
+            "people": sorted(person_daily, key=lambda r: (-r["avg_per_day"], r["person"])),
+        }
+
         window_out[wkey] = {
             "label": wlabel,
             "from": w_from,
@@ -643,6 +728,7 @@ def analyze(conn: sqlite3.Connection, chat_ids: list[int], chat_name: str, names
             "reactions": reaction_blocks,
             "heatmap": heat,
             "funniest": funniest,
+            "daily_stats": daily_stats,
             "clips": {
                 "tiktok": build_clip_block(people_order, clips_sent["tiktok"], laughs_on_clips["tiktok"]),
                 "instagram_reels": build_clip_block(

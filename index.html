@@ -365,6 +365,7 @@
       <button type="button" data-panel="matrix">Who → Whom</button>
       <button type="button" data-panel="race">Bar Race</button>
       <button type="button" data-panel="heat">When hours</button>
+      <button type="button" data-panel="activity">Activity</button>
       <button type="button" data-panel="funniest">Funniest</button>
       <button type="button" data-panel="clips">Clips</button>
     </nav>
@@ -444,6 +445,29 @@
       <p class="section-sub">Haha reacts by day × hour in Eastern Time (EST).</p>
       <div class="controls"><div class="seg" id="heat-window-seg"></div></div>
       <div class="panel-card"><div class="heat-wrap"><div class="heat-grid" id="heat-grid"></div><div class="heat-peak" id="heat-peak"></div></div></div>
+    </section>
+
+    <section class="panel" id="panel-activity">
+      <div class="section-title">Daily activity</div>
+      <p class="section-sub">How often the chat actually texts — busiest days, averages, and who talks the most.</p>
+      <div class="controls"><div class="seg" id="activity-window-seg"></div></div>
+      <div class="stats" id="activity-stats"></div>
+      <div class="stats" id="activity-stats-extra" style="margin-top:10px"></div>
+      <div class="section-title" style="margin-top:20px;font-size:1.1rem">By weekday</div>
+      <div class="panel-card">
+        <div class="board-head"><div>#</div><div>Day</div><div>Relative</div><div style="text-align:right">Texts</div></div>
+        <div id="activity-weekdays"></div>
+      </div>
+      <div class="section-title" style="margin-top:20px;font-size:1.1rem">Top 10 busiest days</div>
+      <div class="panel-card">
+        <div class="board-head"><div>#</div><div>Date</div><div>Relative</div><div style="text-align:right">Texts</div></div>
+        <div id="activity-top-days"></div>
+      </div>
+      <div class="section-title" style="margin-top:20px;font-size:1.1rem">Per-person activity</div>
+      <div class="panel-card">
+        <div class="board-head"><div>#</div><div>Person</div><div>Relative</div><div style="text-align:right">Avg/day</div></div>
+        <div id="activity-people"></div>
+      </div>
     </section>
 
     <section class="panel" id="panel-funniest">
@@ -612,6 +636,10 @@
     function fmtChars(n) { return n >= 1000 ? (n/1000).toFixed(1)+"k" : String(n); }
     function fmtDate(iso) {
       if (!iso) return "—";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+        const [y, m, d] = iso.split("-").map(Number);
+        return new Date(y, m - 1, d).toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" });
+      }
       return new Date(iso).toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" });
     }
     function fmtTime(iso) {
@@ -870,6 +898,78 @@
         <span>Total: <strong>${total.toLocaleString()}</strong></span>`;
     }
 
+    let activityWindow = "all_time";
+    function renderActivity() {
+      const extra = document.getElementById("activity-stats-extra");
+      const weekEl = document.getElementById("activity-weekdays");
+      const ds = DATA.window[activityWindow] && DATA.window[activityWindow].daily_stats;
+      if (!ds) {
+        document.getElementById("activity-stats").innerHTML = `<div style="padding:18px;color:var(--muted)">No daily stats yet. Re-export with ./get-laughs.sh so this tab can fill in.</div>`;
+        extra.innerHTML = "";
+        weekEl.innerHTML = "";
+        document.getElementById("activity-top-days").innerHTML = "";
+        document.getElementById("activity-people").innerHTML = "";
+        return;
+      }
+      document.getElementById("activity-stats").innerHTML = `
+        <div class="stat"><div class="stat-label">Busiest day</div><div class="stat-value">${escapeHtml(fmtDate(ds.busiest_day))}</div>
+          <div class="bar-meta" style="margin-top:4px">${Number(ds.busiest_day_count).toLocaleString()} texts</div></div>
+        <div class="stat"><div class="stat-label">Avg texts / active day</div><div class="stat-value">${ds.avg_messages_per_day}</div>
+          <div class="bar-meta" style="margin-top:4px">${Number(ds.total_active_days).toLocaleString()} days with at least one text</div></div>
+        <div class="stat"><div class="stat-label">Avg texts / calendar day</div><div class="stat-value">${ds.avg_per_calendar_day != null ? ds.avg_per_calendar_day : ds.avg_messages_per_day}</div>
+          <div class="bar-meta" style="margin-top:4px">${Number(ds.calendar_days || ds.total_active_days).toLocaleString()} days from first to last message</div></div>`;
+      extra.innerHTML = `
+        <div class="stat"><div class="stat-label">Median / active day</div><div class="stat-value">${ds.median_messages_per_day != null ? ds.median_messages_per_day : "—"}</div>
+          <div class="bar-meta" style="margin-top:4px">Typical day, not skewed by huge spikes</div></div>
+        <div class="stat"><div class="stat-label">Busiest weekday</div><div class="stat-value">${escapeHtml(ds.busiest_weekday || "—")}</div>
+          <div class="bar-meta" style="margin-top:4px">${ds.busiest_weekday_count != null ? Number(ds.busiest_weekday_count).toLocaleString() + " texts" : ""}</div></div>
+        <div class="stat"><div class="stat-label">Quietest active day</div><div class="stat-value">${escapeHtml(fmtDate(ds.quietest_day))}</div>
+          <div class="bar-meta" style="margin-top:4px">${Number(ds.quietest_day_count || 0)} texts</div></div>`;
+
+      const weekdayNames = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+      const weekdayTotals = ds.weekday_totals || [0,0,0,0,0,0,0];
+      const maxWeek = Math.max(...weekdayTotals, 1);
+      weekEl.innerHTML = weekdayTotals.map((count, i) => `
+        <div class="row" data-i="${i < 3 ? i : 9}">
+          <div class="rank ${i===weekdayTotals.indexOf(Math.max(...weekdayTotals))?"top":""}">${i+1}</div>
+          <div class="name">${weekdayNames[i]}</div>
+          <div class="bar-cell">
+            <div class="bar-track"><div class="bar-fill" data-pct="${(count/maxWeek)*100}"></div></div>
+          </div>
+          <div class="score-cell">${Number(count).toLocaleString()}</div>
+        </div>`).join("");
+      animateBars(weekEl);
+
+      const topDays = ds.top_days || [];
+      const maxDay = topDays.length ? topDays[0].count : 1;
+      const topContainer = document.getElementById("activity-top-days");
+      topContainer.innerHTML = topDays.map((d, i) => `
+        <div class="row" data-i="${i}">
+          <div class="rank ${i<3?"top":""}">${i+1}</div>
+          <div class="name">${escapeHtml(fmtDate(d.date))}</div>
+          <div class="bar-cell">
+            <div class="bar-track"><div class="bar-fill" data-pct="${(d.count/maxDay)*100}"></div></div>
+          </div>
+          <div class="score-cell">${Number(d.count).toLocaleString()}</div>
+        </div>`).join("");
+      animateBars(topContainer);
+
+      const people = ds.people || [];
+      const maxAvg = people.length ? Math.max(...people.map(p => p.avg_per_day), 0.001) : 1;
+      const pContainer = document.getElementById("activity-people");
+      pContainer.innerHTML = people.map((p, i) => `
+        <div class="row" data-i="${i}">
+          <div class="rank ${i<3?"top":""}">${i+1}</div>
+          <div class="name">${escapeHtml(p.person)}</div>
+          <div class="bar-cell">
+            <div class="bar-track"><div class="bar-fill" data-pct="${(p.avg_per_day/maxAvg)*100}"></div></div>
+            <div class="bar-meta">${p.total_messages.toLocaleString()} texts · ${p.active_days} active days · peak ${escapeHtml(fmtDate(p.busiest_day))} (${p.busiest_day_count})</div>
+          </div>
+          <div class="score-cell">${p.avg_per_day}</div>
+        </div>`).join("");
+      animateBars(pContainer);
+    }
+
     function mediaHtml(media) {
       if (!media || !media.length) return "";
       return `<div class="hof-media">${media.map((m) => {
@@ -1009,12 +1109,8 @@
       document.getElementById("app").classList.add("app-hidden");
       document.getElementById("app").classList.remove("app-visible");
       const filteredPeople = data.people.filter((p) => p !== "Unknown");
-
-      // Only show the mapper for people who need naming (phone numbers, emails, "Me")
       const unmapped = filteredPeople.filter(needsNaming);
-
       if (unmapped.length === 0) {
-        // Everyone already has a proper name — skip the mapper
         boot(data);
         return;
       }
@@ -1057,7 +1153,6 @@
         mapping[original] = name;
         finalNames.push(name.toLowerCase());
       });
-      // Include people not in the mapper (already named) for duplicate check
       RAW_DATA.people.forEach((p) => {
         if (p === "Unknown") return;
         if (!(p in mapping)) {
@@ -1068,11 +1163,9 @@
         alert("Please use a different name for each person.");
         return;
       }
-      // Remove "Unknown" from the data
       mapping["Unknown"] = null;
       document.getElementById("name-mapper").classList.remove("visible");
       const cleaned = renameDeep(RAW_DATA, mapping);
-      // Filter out null entries (Unknown) from people array
       if (cleaned.people) {
         cleaned.people = cleaned.people.filter((p) => p !== null && p !== "Unknown");
       }
@@ -1092,6 +1185,7 @@
         if (panel==="matrix") renderMatrix();
         if (panel==="race") renderRaceFrame(raceFrame);
         if (panel==="heat") renderHeat();
+        if (panel==="activity") renderActivity();
         if (panel==="funniest") renderFunniest();
         if (panel==="clips") renderClips();
       });
@@ -1108,6 +1202,7 @@
         renderMatrix();
       });
       wireSeg("heat-window-seg","data-window",(w)=>{ heatWindow=w; renderHeat(); });
+      wireSeg("activity-window-seg","data-window",(w)=>{ activityWindow=w; renderActivity(); });
       wireSeg("funniest-window-seg","data-window",(w)=>{ funniestWindow=w; renderFunniest(); });
       wireSeg("clips-window-seg","data-window",(w)=>{ clipsWindow=w; renderClips(); });
       wireSeg("clips-kind-seg","data-clips",(k)=>{ clipsKind=k; renderClips(); });
@@ -1145,6 +1240,7 @@
       fillWindowSeg("window-seg", windowKey);
       fillWindowSeg("matrix-window-seg", matrixWindow);
       fillWindowSeg("heat-window-seg", heatWindow);
+      fillWindowSeg("activity-window-seg", activityWindow);
       fillWindowSeg("funniest-window-seg", funniestWindow);
       fillWindowSeg("clips-window-seg", clipsWindow);
       bindOnce();
@@ -1156,6 +1252,7 @@
       ensureRaceDom();
       renderRaceFrame(0);
       renderHeat();
+      renderActivity();
       renderFunniest();
       renderClips();
     }
@@ -1219,7 +1316,6 @@
     document.getElementById("apply-names").addEventListener("click", applyNameMapping);
     document.getElementById("skip-names").addEventListener("click", () => {
       document.getElementById("name-mapper").classList.remove("visible");
-      // Filter out Unknown even when skipping
       const data = JSON.parse(JSON.stringify(RAW_DATA));
       if (data.people) {
         data.people = data.people.filter((p) => p !== "Unknown");
